@@ -3,11 +3,23 @@ import pandas as pd
 from datetime import datetime
 import sys
 import os
+import locale
 
+# --- НАСТРОЙКИ ---
 PARTNER_TOKEN = '4pbzfstkd5chu79nke99'
 COMPANY_ID = 1056080
 LOGIN = 'reg@rkb12.ru'
 PASSWORD = 'X@zu12sho!'
+
+# Словари для русской даты
+RU_MONTHS = {
+    1: 'января', 2: 'февраля', 3: 'марта', 4: 'апреля', 5: 'мая', 6: 'июня',
+    7: 'июля', 8: 'августа', 9: 'сентября', 10: 'октября', 11: 'ноября', 12: 'декабря'
+}
+RU_DAYS = {
+    0: 'Понедельник', 1: 'Вторник', 2: 'Среда', 3: 'Четверг',
+    4: 'Пятница', 5: 'Суббота', 6: 'Воскресенье'
+}
 
 
 def get_user_token(partner_token, login, password):
@@ -17,10 +29,7 @@ def get_user_token(partner_token, login, password):
         'Content-Type': 'application/json',
         'Authorization': f'Bearer {partner_token}',
     }
-    data = {
-        'login': login,
-        'password': password,
-    }
+    data = {'login': login, 'password': password}
 
     try:
         response = requests.post(url, json=data, headers=headers)
@@ -28,18 +37,12 @@ def get_user_token(partner_token, login, password):
         return response.json().get('data', {}).get('user_token')
     except Exception as e:
         print(f"Ошибка авторизации: {e}")
-        if 'response' in locals():
-            print(f"Ответ сервера: {response.text}")
         return None
 
 
 def get_daily_records(partner_token, user_token, company_id, date):
     url = f"https://api.yclients.com/api/v1/records/{company_id}"
-    params = {
-        'start_date': date,
-        'end_date': date,
-        'count': 200
-    }
+    params = {'start_date': date, 'end_date': date, 'count': 1000}  # Ставим больше, чтобы влезли все
     headers = {
         'Accept': 'application/vnd.yclients.v2+json',
         'Content-Type': 'application/json',
@@ -55,110 +58,176 @@ def get_daily_records(partner_token, user_token, company_id, date):
         return None
 
 
-def get_attendance_status(code):
-    statuses = {
-        1: 'Клиент пришел',
-        0: 'Ожидание клиента',
-        -1: 'Клиент не пришел',
-        2: 'Клиент подтвердил'
-    }
-    return statuses.get(code, 'Неизвестный статус')
+def format_russian_date(date_str):
+    """Превращает 2025-11-19 в 'Среда 19 ноября'"""
+    dt = datetime.strptime(date_str, '%Y-%m-%d')
+    day_name = RU_DAYS[dt.weekday()]
+    month_name = RU_MONTHS[dt.month]
+    return f"{day_name} {dt.day} {month_name}"
 
 
-def create_excel(records, date_str):
-    data_rows = []
-
+def create_excel_visual(records, date_str):
+    """Создает красивый Excel отчет, сгруппированный по врачам"""
     print(f"Обработка {len(records)} записей...")
 
-    for record in records:
-        # Обработка услуг
-        services = record.get('services', []) or []
-        services_titles = ", ".join([s.get('title', '') for s in services])
-        total_cost = sum([s.get('cost', 0) for s in services])
+    # 1. Группируем записи по врачам
+    # Структура: { "Имя врача": { "spec": "Хирург", "records": [...] } }
+    doctors_data = {}
 
-        # Обработка клиента/комментария (Ваша логика)
+    for record in records:
+        staff = record.get('staff') or {}
+        staff_name = staff.get('name', 'Неизвестный врач')
+        staff_spec = staff.get('specialization') or 'Специалист'
+
+        # Ключ группировки - ID сотрудника, чтобы тезки не склеились, но отображать будем имя
+        staff_id = staff.get('id', 0)
+
+        if staff_id not in doctors_data:
+            doctors_data[staff_id] = {
+                'name': staff_name,
+                'spec': staff_spec,
+                'records': []
+            }
+
+        # Парсим время визита для сортировки
+        visit_dt = datetime.fromisoformat(record['datetime'])
+
+        # Определяем метку статуса (как на фото плюсики)
+        # attendance: 1 - пришел, -1 - не пришел, 0 - ожидание, 2 - подтвердил
+        status_code = record.get('attendance')
+        mark = " "
+        if status_code == 1:
+            mark = "+"
+        elif status_code == -1:
+            mark = "-"
+        elif status_code == 2:
+            mark = "?"  # Подтвердил, но еще не пришел
+
+        # Данные пациента
         client = record.get('client') or {}
-        patient_name = client.get('name', 'N/A')
-        patient_phone = client.get('phone', 'N/A')
+        patient_name = client.get('name', '')
+        phone = client.get('phone', '')
         comment = record.get('comment', '')
 
-        if patient_name == 'N/A' and comment:
-            # Простая эмуляция вашей логики парсинга комментария
-            import re
-            patient_name = comment.strip()
-            phone_match = re.search(r'[78]?\d{10}', comment)
-            if phone_match:
-                patient_phone = phone_match.group(0)
-                patient_name = comment.replace(patient_phone, '').strip()
+        # Пытаемся найти полезную инфу (ДР или телефон) для последней колонки
+        info_col = phone
+        # Если в комментарии есть дата (похожая на ДР), берем её, как на фото
+        import re
+        dob_match = re.search(r'\d{2}[./]\d{2}[./]\d{2,4}', comment)
+        if dob_match:
+            info_col = dob_match.group(0)  # Берем дату из комментария
+        elif comment:
+            info_col = f"{phone} ({comment})"  # Или телефон + коммент
 
-        # Формируем строку для таблицы
-        # Парсим дату из строки ISO
-        visit_dt = datetime.fromisoformat(record['datetime'])
-        visit_time = visit_dt.strftime('%H:%M')
+        doctors_data[staff_id]['records'].append({
+            'time': visit_dt,
+            'time_str': visit_dt.strftime('%H.%M'),
+            'patient': patient_name,
+            'info': info_col,
+            'mark': mark
+        })
 
-        row = {
-            'Время': visit_time,
-            'Пациент': patient_name,
-            'Телефон': patient_phone,
-            'Врач': record.get('staff', {}).get('name', 'N/A'),
-            'Специализация': record.get('staff', {}).get('specialization', 'N/A'),
-            'Услуга': services_titles,
-            'Стоимость': total_cost,
-            'Статус визита': get_attendance_status(record.get('attendance')),
-            'Комментарий': comment
-        }
-        data_rows.append(row)
+    # 2. Начинаем создавать Excel
+    filename = f"raspisanie_{date_str}.xlsx"
+    if getattr(sys, 'frozen', False):
+        application_path = os.path.dirname(sys.executable)
+    else:
+        application_path = os.path.dirname(os.path.abspath(__file__))
+    full_path = os.path.join(application_path, filename)
 
-    # Создаем DataFrame (таблицу)
-    df = pd.DataFrame(data_rows)
+    # Используем Pandas ExcelWriter с движком xlsxwriter для стилизации
+    writer = pd.ExcelWriter(full_path, engine='xlsxwriter')
+    workbook = writer.book
+    worksheet = workbook.add_worksheet('Расписание')
 
-    filename = f"report_{date_str}.xlsx"
+    # --- СТИЛИ ---
+    # Стиль заголовка даты (Среда 19 ноября)
+    fmt_main_header = workbook.add_format({
+        'bold': True, 'font_size': 14, 'align': 'center', 'valign': 'vcenter',
+        'bottom': 1
+    })
+    # Стиль заголовка врача (Серый фон)
+    fmt_doc_header = workbook.add_format({
+        'bold': True, 'bg_color': '#E0E0E0', 'border': 1, 'align': 'left'
+    })
+    # Стиль ячеек (Рамка)
+    fmt_cell = workbook.add_format({'border': 1, 'align': 'left', 'font_size': 11})
+    # Стиль времени (По центру)
+    fmt_time = workbook.add_format({'border': 1, 'align': 'center', 'font_size': 11})
+    # Стиль метки (+/-)
+    fmt_mark = workbook.add_format({'border': 1, 'align': 'center', 'bold': True})
 
-    # Сохраняем в Excel
-    try:
-        # Получаем путь к папке, где лежит запущенный exe файл
-        if getattr(sys, 'frozen', False):
-            application_path = os.path.dirname(sys.executable)
-        else:
-            application_path = os.path.dirname(os.path.abspath(__file__))
+    # Настройка ширины колонок (как на фото)
+    worksheet.set_column('A:A', 3)  # Метка (+/-)
+    worksheet.set_column('B:B', 8)  # Время
+    worksheet.set_column('C:C', 35)  # ФИО пациента
+    worksheet.set_column('D:D', 18)  # Инфо (ДР/Тел)
 
-        full_path = os.path.join(application_path, filename)
+    # --- ЗАПИСЬ ДАННЫХ ---
+    current_row = 0
 
-        df.to_excel(full_path, index=False)
-        print(f"\nГотово! Отчет сохранен в файл:\n{full_path}")
-    except Exception as e:
-        print(f"Ошибка при сохранении файла: {e}")
-        print("Убедитесь, что файл не открыт в Excel!")
+    # 1. Заголовок даты
+    rus_date = format_russian_date(date_str)
+    worksheet.merge_range(current_row, 0, current_row, 3, rus_date, fmt_main_header)
+    current_row += 2  # Пропускаем строку
+
+    # Сортируем врачей по алфавиту (или как угодно)
+    sorted_staff_ids = sorted(doctors_data.keys(), key=lambda k: doctors_data[k]['spec'])
+
+    for staff_id in sorted_staff_ids:
+        doc = doctors_data[staff_id]
+
+        # Заголовок врача: "Специализация ФИО          к.____"
+        header_text = f"{doc['spec']} {doc['name']}"
+        worksheet.merge_range(current_row, 0, current_row, 3, header_text, fmt_doc_header)
+        current_row += 1
+
+        # Сортируем записи по времени
+        doc['records'].sort(key=lambda x: x['time'])
+
+        for rec in doc['records']:
+            worksheet.write(current_row, 0, rec['mark'], fmt_mark)
+            worksheet.write(current_row, 1, rec['time_str'], fmt_time)
+            worksheet.write(current_row, 2, rec['patient'], fmt_cell)
+            worksheet.write(current_row, 3, rec['info'], fmt_cell)
+            current_row += 1
+
+        # Пустая строка после каждого врача для красоты
+        current_row += 1
+
+    # Настройки печати (чтобы влезало на А4)
+    worksheet.set_portrait()
+    worksheet.fit_to_pages(1, 0)  # Вписать по ширине в 1 страницу
+
+    writer.close()
+    print(f"\nГотово! Файл сохранен: {full_path}")
 
 
 def main():
-    print("--- ГЕНЕРАТОР ОТЧЕТОВ YCLIENTS ---")
+    print("--- ГЕНЕРАТОР РАСПИСАНИЯ ---")
 
-    # Если передали дату при запуске (через консоль), берем её, иначе спрашиваем или берем сегодня
     if len(sys.argv) > 1:
         report_date = sys.argv[1]
     else:
         today = datetime.now().strftime('%Y-%m-%d')
-        user_input = input(f"Введите дату отчета (формат YYYY-MM-DD) [Enter для {today}]: ").strip()
+        user_input = input(f"Введите дату (YYYY-MM-DD) [Enter для {today}]: ").strip()
         report_date = user_input if user_input else today
 
-    print(f"1. Авторизация ({LOGIN})...")
+    print(f"Авторизация...")
     token = get_user_token(PARTNER_TOKEN, LOGIN, PASSWORD)
 
     if token:
-        print("   Успешно.")
-        print(f"2. Получение записей за {report_date}...")
+        print(f"Запрос данных за {report_date}...")
         records = get_daily_records(PARTNER_TOKEN, token, COMPANY_ID, report_date)
 
         if records:
-            print("   Записи получены.")
-            create_excel(records, report_date)
+            create_excel_visual(records, report_date)
         else:
-            print("   Записей не найдено или произошла ошибка.")
+            print("Записей не найдено.")
     else:
-        print("   Не удалось получить токен доступа.")
+        print("Ошибка авторизации.")
 
-    input("\nНажмите Enter, чтобы закрыть это окно...")
+    input("\nНажмите Enter для выхода...")
 
 
 if __name__ == '__main__':

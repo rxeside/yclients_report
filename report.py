@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 import sys
 import os
-import locale
+import re  # Вынес импорт регулярных выражений наверх
 
 # --- НАСТРОЙКИ ---
 PARTNER_TOKEN = '4pbzfstkd5chu79nke99'
@@ -42,7 +42,7 @@ def get_user_token(partner_token, login, password):
 
 def get_daily_records(partner_token, user_token, company_id, date):
     url = f"https://api.yclients.com/api/v1/records/{company_id}"
-    params = {'start_date': date, 'end_date': date, 'count': 1000}  # Ставим больше, чтобы влезли все
+    params = {'start_date': date, 'end_date': date, 'count': 1000}
     headers = {
         'Accept': 'application/vnd.yclients.v2+json',
         'Content-Type': 'application/json',
@@ -71,7 +71,6 @@ def create_excel_visual(records, date_str):
     print(f"Обработка {len(records)} записей...")
 
     # 1. Группируем записи по врачам
-    # Структура: { "Имя врача": { "spec": "Хирург", "records": [...] } }
     doctors_data = {}
 
     for record in records:
@@ -79,7 +78,14 @@ def create_excel_visual(records, date_str):
         staff_name = staff.get('name', 'Неизвестный врач')
         staff_spec = staff.get('specialization') or 'Специалист'
 
-        # Ключ группировки - ID сотрудника, чтобы тезки не склеились, но отображать будем имя
+        # --- ИЗМЕНЕНИЕ: Убираем "врач-" из названия специализации ---
+        # Например, "Врач-хирург" станет "Хирург"
+        staff_spec = staff_spec.replace('Врач-', '').replace('врач-', '').strip()
+        # Делаем первую букву заглавной
+        if staff_spec:
+            staff_spec = staff_spec[0].upper() + staff_spec[1:]
+
+        # Ключ группировки - ID сотрудника
         staff_id = staff.get('id', 0)
 
         if staff_id not in doctors_data:
@@ -89,36 +95,27 @@ def create_excel_visual(records, date_str):
                 'records': []
             }
 
-        # Парсим время визита для сортировки
+        # Парсим время визита
         visit_dt = datetime.fromisoformat(record['datetime'])
 
-        # Определяем метку статуса (как на фото плюсики)
-        # attendance: 1 - пришел, -1 - не пришел, 0 - ожидание, 2 - подтвердил
-        status_code = record.get('attendance')
+        # --- ИЗМЕНЕНИЕ: Первая колонка теперь всегда пустая ---
         mark = " "
-        if status_code == 1:
-            mark = "+"
-        elif status_code == -1:
-            mark = "-"
-        elif status_code == 2:
-            mark = "?"  # Подтвердил, но еще не пришел
 
         # Данные пациента
         client = record.get('client') or {}
         patient_name = client.get('name', '')
-        phone = client.get('phone', '')
         comment = record.get('comment', '')
 
-        # Пытаемся найти полезную инфу (ДР или телефон) для последней колонки
-        info_col = phone
-        # Если в комментарии есть дата (похожая на ДР), берем её, как на фото
-        import re
-        dob_match = re.search(r'\d{2}[./]\d{2}[./]\d{2,4}', comment)
-        if dob_match:
-            info_col = dob_match.group(0)  # Берем дату из комментария
-        elif comment:
-            info_col = f"{phone} ({comment})"  # Или телефон + коммент
+        # --- ИЗМЕНЕНИЕ: Логика для правой колонки (только дата рождения) ---
+        info_col = ""  # По умолчанию пусто
 
+        # Ищем дату в формате ДД.ММ.ГГГГ или ДД/ММ/ГГГГ в комментарии
+        if comment:
+            dob_match = re.search(r'\d{2}[./]\d{2}[./]\d{2,4}', comment)
+            if dob_match:
+                info_col = dob_match.group(0)  # Если нашли дату - берем только её
+
+        # Записываем данные
         doctors_data[staff_id]['records'].append({
             'time': visit_dt,
             'time_str': visit_dt.strftime('%H.%M'),
@@ -141,27 +138,22 @@ def create_excel_visual(records, date_str):
     worksheet = workbook.add_worksheet('Расписание')
 
     # --- СТИЛИ ---
-    # Стиль заголовка даты (Среда 19 ноября)
     fmt_main_header = workbook.add_format({
         'bold': True, 'font_size': 14, 'align': 'center', 'valign': 'vcenter',
         'bottom': 1
     })
-    # Стиль заголовка врача (Серый фон)
     fmt_doc_header = workbook.add_format({
         'bold': True, 'bg_color': '#E0E0E0', 'border': 1, 'align': 'left'
     })
-    # Стиль ячеек (Рамка)
     fmt_cell = workbook.add_format({'border': 1, 'align': 'left', 'font_size': 11})
-    # Стиль времени (По центру)
     fmt_time = workbook.add_format({'border': 1, 'align': 'center', 'font_size': 11})
-    # Стиль метки (+/-)
     fmt_mark = workbook.add_format({'border': 1, 'align': 'center', 'bold': True})
 
-    # Настройка ширины колонок (как на фото)
-    worksheet.set_column('A:A', 3)  # Метка (+/-)
+    # Настройка ширины колонок
+    worksheet.set_column('A:A', 3)  # Метка (пустая)
     worksheet.set_column('B:B', 8)  # Время
     worksheet.set_column('C:C', 35)  # ФИО пациента
-    worksheet.set_column('D:D', 18)  # Инфо (ДР/Тел)
+    worksheet.set_column('D:D', 18)  # Инфо (только ДР)
 
     # --- ЗАПИСЬ ДАННЫХ ---
     current_row = 0
@@ -169,15 +161,15 @@ def create_excel_visual(records, date_str):
     # 1. Заголовок даты
     rus_date = format_russian_date(date_str)
     worksheet.merge_range(current_row, 0, current_row, 3, rus_date, fmt_main_header)
-    current_row += 2  # Пропускаем строку
+    current_row += 2
 
-    # Сортируем врачей по алфавиту (или как угодно)
+    # Сортируем врачей по алфавиту специальностей
     sorted_staff_ids = sorted(doctors_data.keys(), key=lambda k: doctors_data[k]['spec'])
 
     for staff_id in sorted_staff_ids:
         doc = doctors_data[staff_id]
 
-        # Заголовок врача: "Специализация ФИО          к.____"
+        # Заголовок врача
         header_text = f"{doc['spec']} {doc['name']}"
         worksheet.merge_range(current_row, 0, current_row, 3, header_text, fmt_doc_header)
         current_row += 1
@@ -192,12 +184,12 @@ def create_excel_visual(records, date_str):
             worksheet.write(current_row, 3, rec['info'], fmt_cell)
             current_row += 1
 
-        # Пустая строка после каждого врача для красоты
+        # Пустая строка после каждого врача
         current_row += 1
 
-    # Настройки печати (чтобы влезало на А4)
+    # Настройки печати
     worksheet.set_portrait()
-    worksheet.fit_to_pages(1, 0)  # Вписать по ширине в 1 страницу
+    worksheet.fit_to_pages(1, 0)
 
     writer.close()
     print(f"\nГотово! Файл сохранен: {full_path}")

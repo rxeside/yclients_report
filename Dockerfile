@@ -36,5 +36,5 @@ COPY report.py .
 RUN mkdir /output
 
 # 5. Сборка файла
-CMD pyinstaller --clean --onefile --name="Otchet_Yclients_v3" --hidden-import="openpyxl" --hidden-import="xlsxwriter" report.py && \
-    cp dist/Otchet_Yclients_v3 /output/
+CMD pyinstaller --clean --onefile --name="Otchet_Yclients_v6" --hidden-import="openpyxl" --hidden-import="xlsxwriter" report.py && \
+    cp dist/Otchet_Yclients_v6 /output/

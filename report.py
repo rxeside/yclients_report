@@ -70,7 +70,7 @@ def get_full_client_info(partner_token, user_token, company_id, client_id):
         'Authorization': f'Bearer {partner_token}, User {user_token}',
     }
     try:
-        response = requests.get(url, headers=headers, timeout=10)  # Добавил таймаут
+        response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             return client_id, response.json().get('data', {})
         return client_id, {}
@@ -115,15 +115,13 @@ def create_excel_visual(records, date_str, partner_token, user_token, company_id
     if ids_to_load:
         print(f"Загрузка полных карточек для {len(ids_to_load)} клиентов...")
 
-        # Используем 5 потоков, чтобы уложиться в лимиты API YClients (5 запросов в секунду)
+        # Используем 5 потоков
         with ThreadPoolExecutor(max_workers=5) as executor:
-            # Запускаем задачи параллельно
             futures = [
                 executor.submit(get_full_client_info, partner_token, user_token, company_id, cid)
                 for cid in ids_to_load
             ]
 
-            # Собираем результаты по мере выполнения
             for future in futures:
                 cid, data = future.result()
                 if data:
@@ -169,11 +167,9 @@ def create_excel_visual(records, date_str, partner_token, user_token, company_id
         dob_match = re.search(date_pattern, record_comment)
 
         if not dob_match:
-            # Сначала ищем в тех данных, что пришли сразу
             client_note = client.get('comment', '')
             dob_match = re.search(date_pattern, client_note)
 
-            # Если не нашли, смотрим в кэше (который мы уже заполнили на Этапе 2)
             if not dob_match and client_id and client_id in clients_cache:
                 full_note = clients_cache[client_id].get('comment', '')
                 dob_match = re.search(date_pattern, full_note)
@@ -225,8 +221,8 @@ def create_excel_visual(records, date_str, partner_token, user_token, company_id
     worksheet.merge_range(current_row, 0, current_row, 3, rus_date, fmt_main_header)
     current_row += 2
 
-    # Сортируем врачей
-    sorted_staff_ids = sorted(doctors_data.keys(), key=lambda k: doctors_data[k]['spec'])
+    # --- Сортировка врачей по алфавиту (по имени) ---
+    sorted_staff_ids = sorted(doctors_data.keys(), key=lambda k: doctors_data[k]['name'])
 
     for staff_id in sorted_staff_ids:
         doc = doctors_data[staff_id]

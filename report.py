@@ -9,8 +9,8 @@ from concurrent.futures import ThreadPoolExecutor  # Библиотека для
 # --- НАСТРОЙКИ ---
 PARTNER_TOKEN = '4pbzfstkd5chu79nke99'
 COMPANY_ID = 1056080
-LOGIN = 'reg@rkb12.ru'
-PASSWORD = 'X@zu12sho!'
+LOGIN = 'med-centr@rkb12.ru'
+PASSWORD = '2eN{uF?<-wr_'
 
 # Словари для русской даты
 RU_MONTHS = {
